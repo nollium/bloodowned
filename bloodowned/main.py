@@ -13,7 +13,6 @@ except ImportError:  # pragma: no cover - fallback for older neo4j versions
     Driver = ManagedTransaction = Result = object  # type: ignore[misc,assignment]
 
 
-# ANSI color codes
 class Colors:
     """ANSI color escape codes."""
     RESET = "\033[0m"
@@ -158,7 +157,6 @@ def search_owned_users(tx: ManagedTransaction, identifier: str) -> list[str]:
     result.consume()
     
     names = [str(r["name"]).upper() for r in records]
-    # Deduplicate while preserving order
     seen = set()
     deduped = []
     for n in names:
@@ -201,9 +199,7 @@ def resolve_user_principal_name(
     result: Result = tx.run(query, **params)
     records = list(result)
     result.consume()
-    # Consider only User nodes
     names = [str(r["name"]).upper() for r in records if r.get("isUser")]
-    # Deduplicate while preserving order
     seen = set()
     deduped = []
     for n in names:
@@ -232,12 +228,10 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    # Initialize color support
     use_color = should_colorize() and not args.no_color
     if not use_color:
         Colors.disable()
 
-    # Validate arguments
     if args.list and args.user_principal_name:
         parser.error("Cannot specify both -l/--list and a user name.")
     if args.search and not args.user_principal_name:
@@ -257,11 +251,9 @@ def main() -> None:
             if args.list:
                 owned_users = session.execute_read(list_owned_users)
                 if not should_colorize():
-                    # Non-TTY output: just raw data, one per line
                     for upn in owned_users:
                         print(upn)
                 else:
-                    # TTY output: formatted with colors
                     if owned_users:
                         owned_colored = colorize("owned", Colors.BOLD + Colors.BRIGHT_YELLOW, use_color)
                         print(f"{colorize('[+]', Colors.GREEN, use_color)} Found {len(owned_users)} user(s) marked as {owned_colored}:")
@@ -276,11 +268,9 @@ def main() -> None:
             if args.search:
                 matching_users = session.execute_read(search_owned_users, args.user_principal_name)
                 if not should_colorize():
-                    # Non-TTY output: just raw data, one per line
                     for upn in matching_users:
                         print(upn)
                 else:
-                    # TTY output: formatted with colors
                     if matching_users:
                         pattern_colored = colorize(args.user_principal_name.upper(), Colors.CYAN, use_color)
                         owned_colored = colorize("owned", Colors.BOLD + Colors.BRIGHT_YELLOW, use_color)
@@ -294,7 +284,6 @@ def main() -> None:
                         print(f"{colorize('[-]', Colors.RED, use_color)} No {owned_colored} users found matching '{pattern_colored}'.")
                 return
 
-            # User operation (mark/unmark)
             try:
                 resolved_upn = session.execute_read(
                     resolve_user_principal_name,

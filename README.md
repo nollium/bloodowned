@@ -12,13 +12,19 @@
 
 ## Installation
 
-Install the tool from the root of the project directory using pip:
+### Using pipx (Recommended)
 
 ```bash
-pip install .
+pipx install git+https://github.com/nollium/bloodowned.git
 ```
 
-After installation, the `bloodowned` command will be available in your PATH.
+### Using pip
+
+```bash
+git clone https://github.com/nollium/bloodowned.git
+cd bloodowned
+pip install .
+```
 
 ## Usage
 
@@ -29,8 +35,6 @@ bloodowned BIT200293
 bloodowned BIT200293@DOMAIN.COM
 bloodowned -t 'bolt://localhost:7687' -p 'password' BIT200293
 ```
-
-The tool will automatically resolve users even if you only provide the username without the domain. If multiple users match, it will show all matches and ask for clarification.
 
 ### Unmark a user (remove owned status)
 
@@ -43,24 +47,15 @@ bloodowned -d BIT200293@DOMAIN.COM
 
 ```bash
 bloodowned -l
-```
-
-When piped or redirected, outputs only the user names (one per line):
-```bash
-bloodowned -l | grep ADMIN
-bloodowned -l > owned_users.txt
+bloodowned -l | grep ADMIN  # raw output when piped
 ```
 
 ### Search for owned users
 
-Search for owned users matching a pattern:
 ```bash
 bloodowned -s BIT200
 bloodowned -s admin
-bloodowned -s @contoso.local
 ```
-
-The search uses fuzzy matching on user names, Azure names, and object IDs, and only returns users already marked as owned.
 
 ### Options
 
@@ -76,29 +71,12 @@ The search uses fuzzy matching on user names, Azure names, and object IDs, and o
 ## Examples
 
 ```bash
-# Mark a user as owned
 bloodowned administrator
-
-# Mark a user with full UPN
 bloodowned administrator@contoso.local
-
-# Unmark a user
 bloodowned -d administrator@contoso.local
-
-# List all owned users (formatted)
 bloodowned -l
-
-# List owned users for scripting (raw output)
 bloodowned -l | wc -l
-
-# Search for owned users matching a pattern
-bloodowned -s BIT200
 bloodowned -s admin
-bloodowned -s @domain.local
-
-# Connect to remote Neo4j
-bloodowned -t bolt://192.168.1.100:7687 -p 'MyPassword' administrator
-
-# Disable colored output
+bloodowned -t bolt://192.168.1.100:7687 -p 'password' administrator
 bloodowned --no-color administrator
 ```
