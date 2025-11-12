@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from typing import Optional, Sequence
 
 from neo4j import GraphDatabase
@@ -10,6 +11,43 @@ try:
     from neo4j import Driver, ManagedTransaction, Result
 except ImportError:  # pragma: no cover - fallback for older neo4j versions
     Driver = ManagedTransaction = Result = object  # type: ignore[misc,assignment]
+
+
+# ANSI color codes
+class Colors:
+    """ANSI color escape codes."""
+    RESET = "\033[0m"
+    GREEN = "\033[32m"
+    RED = "\033[31m"
+    YELLOW = "\033[33m"
+    BRIGHT_YELLOW = "\033[38;5;226m"  # Saturated yellow (more yellow, less white)
+    CYAN = "\033[36m"
+    BOLD = "\033[1m"
+    GOLD = "\033[38;5;214m"  # Golden/yellow color similar to netexec
+    
+    @staticmethod
+    def disable() -> None:
+        """Disable colors by setting all codes to empty strings."""
+        Colors.RESET = ""
+        Colors.GREEN = ""
+        Colors.RED = ""
+        Colors.YELLOW = ""
+        Colors.BRIGHT_YELLOW = ""
+        Colors.CYAN = ""
+        Colors.BOLD = ""
+        Colors.GOLD = ""
+
+
+def should_colorize() -> bool:
+    """Check if output should be colorized (TTY check)."""
+    return sys.stdout.isatty()
+
+
+def colorize(text: str, color: str, enabled: bool = True) -> str:
+    """Apply color to text if colorization is enabled."""
+    if not enabled:
+        return text
+    return f"{color}{text}{Colors.RESET}"
 
 
 class UserLookupError(Exception):
@@ -109,8 +147,14 @@ def main() -> None:
     parser.add_argument("-t", "--target", default="bolt://localhost:7687", help="Neo4j URI (default: bolt://localhost:7687)")
     parser.add_argument("-u", "--user", default="neo4j", help="Neo4j username (default: neo4j)")
     parser.add_argument("-p", "--password", default="exegol4thewin", help="Neo4j password (default: exegol4thewin)")
+    parser.add_argument("--no-color", action="store_true", help="Disable colored output")
 
     args = parser.parse_args()
+
+    # Initialize color support
+    use_color = should_colorize() and not args.no_color
+    if not use_color:
+        Colors.disable()
 
     uri = args.target
     user = args.user
@@ -128,25 +172,34 @@ def main() -> None:
                 )
             except MultipleUsersFoundError as multi_error:
                 matches = ", ".join(sorted(name.upper() for name in multi_error.matches))
+                upn_colored = colorize(multi_error.identifier.upper(), Colors.CYAN, use_color)
+                matches_colored = colorize(matches, Colors.CYAN, use_color)
                 print(
-                    f"[-] Multiple users matched '{multi_error.identifier.upper()}': {matches}"
+                    f"{colorize('[-]', Colors.RED, use_color)} Multiple users matched '{upn_colored}': {matches_colored}"
                 )
                 return
             except UserNotFoundError as not_found_error:
-                print(f"[-] User '{not_found_error.identifier.upper()}' not found.")
+                upn_colored = colorize(not_found_error.identifier.upper(), Colors.CYAN, use_color)
+                print(f"{colorize('[-]', Colors.RED, use_color)} User '{upn_colored}' not found.")
                 return
 
             was_marked = session.execute_write(mark_user_as_owned, resolved_upn)
             if was_marked:
-                print(f"[+] Successfully marked user '{resolved_upn}' as owned.")
+                upn_colored = colorize(resolved_upn, Colors.CYAN, use_color)
+                owned_colored = colorize("owned", Colors.BOLD + Colors.BRIGHT_YELLOW, use_color)
+                print(f"{colorize('[+]', Colors.GREEN, use_color)} Successfully marked user '{upn_colored}' as {owned_colored}.")
             else:
-                print(f"[-] User '{resolved_upn}' could not be updated.")
+                upn_colored = colorize(resolved_upn, Colors.CYAN, use_color)
+                print(f"{colorize('[-]', Colors.RED, use_color)} User '{upn_colored}' could not be updated.")
     except AuthError:
-        print(f"[-] Authentication failed for user '{user}'. Please check the credentials.")
+        user_colored = colorize(user, Colors.CYAN, use_color)
+        print(f"{colorize('[-]', Colors.RED, use_color)} Authentication failed for user '{user_colored}'. Please check the credentials.")
     except ServiceUnavailable:
-        print(f"[-] Could not connect to Neo4j at '{uri}'. Please check the address and ensure the database is running.")
+        uri_colored = colorize(uri, Colors.CYAN, use_color)
+        print(f"{colorize('[-]', Colors.RED, use_color)} Could not connect to Neo4j at '{uri_colored}'. Please check the address and ensure the database is running.")
     except Exception as e:
-        print(f"[-] An unexpected error occurred: {e}")
+        error_colored = colorize(str(e), Colors.CYAN, use_color)
+        print(f"{colorize('[-]', Colors.RED, use_color)} An unexpected error occurred: {error_colored}")
     finally:
         if driver:
             driver.close()
