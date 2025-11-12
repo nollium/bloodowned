@@ -338,9 +338,9 @@ def main() -> None:
                     for name, is_high_value, principal_type, control_count in owned_principals:
                         line = f"{name} ({principal_type})"
                         if is_high_value:
-                            line += " (high value)"
+                            line += "\t(high value)"
                         if control_count > 0:
-                            line += f" (controls: {control_count})"
+                            line += f"\t(controls: {control_count})"
                         logger.plain(line)
                 else:
                     if owned_principals:
@@ -368,9 +368,9 @@ def main() -> None:
                     for name, is_high_value, principal_type, control_count in matching_principals:
                         line = f"{name} ({principal_type})"
                         if is_high_value:
-                            line += " (high value)"
+                            line += "\t(high value)"
                         if control_count > 0:
-                            line += f" (controls: {control_count})"
+                            line += f"\t(controls: {control_count})"
                         logger.plain(line)
                 else:
                     if matching_principals:
