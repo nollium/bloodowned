@@ -37,16 +37,37 @@ class Colors:
         Colors.GOLD = ""
 
 
+class Logger:
+    def __init__(self, use_color: bool = True):
+        self._use_color = use_color
+
+    def _colorize(self, text: str, color: str) -> str:
+        if not self._use_color:
+            return text
+        return f"{color}{text}{Colors.RESET}"
+
+    def success(self, message: str) -> None:
+        prefix = self._colorize("[+]", Colors.GREEN)
+        print(f"{prefix} {message}")
+
+    def error(self, message: str) -> None:
+        prefix = self._colorize("[-]", Colors.RED)
+        print(f"{prefix} {message}")
+
+    def info(self, message: str) -> None:
+        prefix = self._colorize("[*]", Colors.YELLOW)
+        print(f"{prefix} {message}")
+
+    def plain(self, message: str) -> None:
+        print(message)
+
+    def highlight(self, text: str, color: str = Colors.CYAN) -> str:
+        return self._colorize(text, color)
+
+
 def should_colorize() -> bool:
     """Check if output should be colorized (TTY check)."""
     return sys.stdout.isatty()
-
-
-def colorize(text: str, color: str, enabled: bool = True) -> str:
-    """Apply color to text if colorization is enabled."""
-    if not enabled:
-        return text
-    return f"{color}{text}{Colors.RESET}"
 
 
 class UserLookupError(Exception):
@@ -261,6 +282,8 @@ def main() -> None:
     if not use_color:
         Colors.disable()
 
+    logger = Logger(use_color)
+
     if args.list and (args.users or args.file):
         parser.error("-l/--list cannot be used with user arguments or -f/--file.")
     if args.search and (args.users or args.file):
@@ -271,7 +294,7 @@ def main() -> None:
         try:
             users_to_process = get_users(args.users, args.file)
         except FileNotFoundError:
-            print(f"{colorize('[-]', Colors.RED, True)} File not found: {colorize(args.file, Colors.CYAN, True)}")
+            logger.error(f"File not found: {logger.highlight(args.file)}")
             return
         
         if not users_to_process:
@@ -288,38 +311,38 @@ def main() -> None:
         with driver.session() as session:
             if args.list:
                 owned_principals = session.execute_read(list_owned_principals)
-                if not should_colorize():
+                if not use_color:
                     for name in owned_principals:
-                        print(name)
+                        logger.plain(name)
                 else:
                     if owned_principals:
-                        owned_colored = colorize("owned", Colors.BOLD + Colors.BRIGHT_YELLOW, use_color)
-                        print(f"{colorize('[+]', Colors.GREEN, use_color)} Found {len(owned_principals)} principal(s) marked as {owned_colored}:")
+                        owned_colored = logger.highlight("owned", Colors.BOLD + Colors.BRIGHT_YELLOW)
+                        logger.success(f"Found {len(owned_principals)} principal(s) marked as {owned_colored}:")
                         for name in owned_principals:
-                            name_colored = colorize(name, Colors.CYAN, use_color)
-                            print(f"  • {name_colored}")
+                            name_colored = logger.highlight(name)
+                            logger.plain(f"  • {name_colored}")
                     else:
-                        owned_colored = colorize("owned", Colors.BOLD + Colors.BRIGHT_YELLOW, use_color)
-                        print(f"{colorize('[-]', Colors.RED, use_color)} No principals marked as {owned_colored}.")
+                        owned_colored = logger.highlight("owned", Colors.BOLD + Colors.BRIGHT_YELLOW)
+                        logger.error(f"No principals marked as {owned_colored}.")
                 return
 
             if args.search:
                 matching_principals = session.execute_read(search_owned_principals, args.search)
-                if not should_colorize():
+                if not use_color:
                     for name in matching_principals:
-                        print(name)
+                        logger.plain(name)
                 else:
                     if matching_principals:
-                        pattern_colored = colorize(args.search.upper(), Colors.CYAN, use_color)
-                        owned_colored = colorize("owned", Colors.BOLD + Colors.BRIGHT_YELLOW, use_color)
-                        print(f"{colorize('[+]', Colors.GREEN, use_color)} Found {len(matching_principals)} {owned_colored} principal(s) matching '{pattern_colored}':")
+                        pattern_colored = logger.highlight(args.search.upper())
+                        owned_colored = logger.highlight("owned", Colors.BOLD + Colors.BRIGHT_YELLOW)
+                        logger.success(f"Found {len(matching_principals)} {owned_colored} principal(s) matching '{pattern_colored}':")
                         for name in matching_principals:
-                            name_colored = colorize(name, Colors.CYAN, use_color)
-                            print(f"  • {name_colored}")
+                            name_colored = logger.highlight(name)
+                            logger.plain(f"  • {name_colored}")
                     else:
-                        pattern_colored = colorize(args.search.upper(), Colors.CYAN, use_color)
-                        owned_colored = colorize("owned", Colors.BOLD + Colors.BRIGHT_YELLOW, use_color)
-                        print(f"{colorize('[-]', Colors.RED, use_color)} No {owned_colored} principals found matching '{pattern_colored}'.")
+                        pattern_colored = logger.highlight(args.search.upper())
+                        owned_colored = logger.highlight("owned", Colors.BOLD + Colors.BRIGHT_YELLOW)
+                        logger.error(f"No {owned_colored} principals found matching '{pattern_colored}'.")
                 return
 
             for user_identifier in users_to_process:
@@ -333,40 +356,38 @@ def main() -> None:
                     if args.delete:
                         was_updated = session.execute_write(unmark_as_owned, resolved_principal, is_computer)
                         if was_updated:
-                            principal_colored = colorize(resolved_principal, Colors.CYAN, use_color)
-                            print(f"{colorize('[+]', Colors.GREEN, use_color)} Successfully unmarked '{principal_colored}'.")
+                            principal_colored = logger.highlight(resolved_principal)
+                            logger.success(f"Successfully unmarked '{principal_colored}'.")
                         else:
-                            principal_colored = colorize(resolved_principal, Colors.CYAN, use_color)
-                            print(f"{colorize('[-]', Colors.RED, use_color)} Principal '{principal_colored}' could not be updated.")
+                            principal_colored = logger.highlight(resolved_principal)
+                            logger.error(f"Principal '{principal_colored}' could not be updated.")
                     else:
                         was_marked = session.execute_write(mark_as_owned, resolved_principal, is_computer)
                         if was_marked:
-                            principal_colored = colorize(resolved_principal, Colors.CYAN, use_color)
-                            owned_colored = colorize("owned", Colors.BOLD + Colors.BRIGHT_YELLOW, use_color)
-                            print(f"{colorize('[+]', Colors.GREEN, use_color)} Successfully marked '{principal_colored}' as {owned_colored}.")
+                            principal_colored = logger.highlight(resolved_principal)
+                            owned_colored = logger.highlight("owned", Colors.BOLD + Colors.BRIGHT_YELLOW)
+                            logger.success(f"Successfully marked '{principal_colored}' as {owned_colored}.")
                         else:
-                            principal_colored = colorize(resolved_principal, Colors.CYAN, use_color)
-                            print(f"{colorize('[-]', Colors.RED, use_color)} Principal '{principal_colored}' could not be updated.")
+                            principal_colored = logger.highlight(resolved_principal)
+                            logger.error(f"Principal '{principal_colored}' could not be updated.")
 
                 except MultipleUsersFoundError as multi_error:
                     matches = ", ".join(sorted(name.upper() for name in multi_error.matches))
-                    identifier_colored = colorize(multi_error.identifier.upper(), Colors.CYAN, use_color)
-                    matches_colored = colorize(matches, Colors.CYAN, use_color)
-                    print(
-                        f"{colorize('[-]', Colors.RED, use_color)} Multiple principals matched '{identifier_colored}': {matches_colored}"
-                    )
+                    identifier_colored = logger.highlight(multi_error.identifier.upper())
+                    matches_colored = logger.highlight(matches)
+                    logger.error(f"Multiple principals matched '{identifier_colored}': {matches_colored}")
                 except UserNotFoundError as not_found_error:
-                    identifier_colored = colorize(not_found_error.identifier.upper(), Colors.CYAN, use_color)
-                    print(f"{colorize('[-]', Colors.RED, use_color)} Principal '{identifier_colored}' not found.")
+                    identifier_colored = logger.highlight(not_found_error.identifier.upper())
+                    logger.error(f"Principal '{identifier_colored}' not found.")
     except AuthError:
-        user_colored = colorize(user, Colors.CYAN, use_color)
-        print(f"{colorize('[-]', Colors.RED, use_color)} Authentication failed for user '{user_colored}'. Please check the credentials.")
+        user_colored = logger.highlight(user)
+        logger.error(f"Authentication failed for user '{user_colored}'. Please check the credentials.")
     except ServiceUnavailable:
-        uri_colored = colorize(uri, Colors.CYAN, use_color)
-        print(f"{colorize('[-]', Colors.RED, use_color)} Could not connect to Neo4j at '{uri_colored}'. Please check the address and ensure the database is running.")
+        uri_colored = logger.highlight(uri)
+        logger.error(f"Could not connect to Neo4j at '{uri_colored}'. Please check the address and ensure the database is running.")
     except Exception as e:
-        error_colored = colorize(str(e), Colors.CYAN, use_color)
-        print(f"{colorize('[-]', Colors.RED, use_color)} An unexpected error occurred: {error_colored}")
+        error_colored = logger.highlight(str(e))
+        logger.error(f"An unexpected error occurred: {error_colored}")
     finally:
         if driver:
             driver.close()
