@@ -180,11 +180,11 @@ def get_users(users_list: list[str], file_path: Optional[str]) -> list[str]:
     return sorted(list(all_users))
 
 
-def search_owned_principals(tx: ManagedTransaction, identifier: str) -> list[str]:
+def search_owned_principals(tx: ManagedTransaction, identifier: str) -> list[tuple[str, bool, str, int]]:
     """
     Search for owned users or computers matching the identifier.
     
-    Returns a list of matching owned principals.
+    Returns a list of matching owned principals with their details.
     """
     candidate = identifier.strip()
     if not candidate:
@@ -196,29 +196,41 @@ def search_owned_principals(tx: ManagedTransaction, identifier: str) -> list[str
         "MATCH (n:Base) "
         "WHERE (toUpper(n.name) = toUpper($q) OR toUpper(n.azname) = toUpper($q)) "
         "  AND (n:User OR n:Computer) AND n.owned = true "
-        "RETURN n.name AS name LIMIT 10 "
+        "WITH n "
+        "OPTIONAL MATCH (n)-[r]->(m) WHERE r.isacl = true "
+        "RETURN n.name AS name, n.highvalue AS is_high_value, labels(n) as labels, count(m) as control_count "
+        "LIMIT 10 "
         "UNION "
         "MATCH (n) "
         "WHERE (toUpper(n.name) CONTAINS toUpper($q) "
         "   OR toUpper(n.azname) CONTAINS toUpper($q) "
         "   OR toUpper(n.objectid) CONTAINS toUpper($q)) "
         "  AND (n:User OR n:Computer) AND n.owned = true "
-        "RETURN n.name AS name LIMIT 10"
+        "WITH n "
+        "OPTIONAL MATCH (n)-[r]->(m) WHERE r.isacl = true "
+        "RETURN n.name AS name, n.highvalue AS is_high_value, labels(n) as labels, count(m) as control_count "
+        "LIMIT 10"
     )
     
     result: Result = tx.run(query, **params)
     records = list(result)
     result.consume()
     
-    names = [str(r["name"]).upper() for r in records]
-    seen = set()
-    deduped = []
-    for n in names:
-        if n not in seen:
-            seen.add(n)
-            deduped.append(n)
-    
-    return deduped
+    principals = []
+    seen_names = set()
+    for record in records:
+        name = str(record["name"]).upper()
+        if name in seen_names:
+            continue
+        seen_names.add(name)
+        
+        is_high_value = record["is_high_value"] is True
+        labels = record["labels"]
+        principal_type = "computer" if "Computer" in labels else "user"
+        control_count = record["control_count"]
+        principals.append((name, is_high_value, principal_type, control_count))
+        
+    return principals
 
 
 def resolve_principal_name(
@@ -353,16 +365,29 @@ def main() -> None:
             if args.search:
                 matching_principals = session.execute_read(search_owned_principals, args.search)
                 if not use_color:
-                    for name in matching_principals:
-                        logger.plain(name)
+                    for name, is_high_value, principal_type, control_count in matching_principals:
+                        line = f"{name} ({principal_type})"
+                        if is_high_value:
+                            line += " (high value)"
+                        if control_count > 0:
+                            line += f" (controls: {control_count})"
+                        logger.plain(line)
                 else:
                     if matching_principals:
                         pattern_colored = logger.highlight(args.search.upper())
                         owned_colored = logger.highlight("owned", Colors.BOLD + Colors.BRIGHT_YELLOW)
                         logger.success(f"Found {len(matching_principals)} {owned_colored} principal(s) matching '{pattern_colored}':")
-                        for name in matching_principals:
+                        for name, is_high_value, principal_type, control_count in matching_principals:
                             name_colored = logger.highlight(name)
-                            logger.plain(f"  • {name_colored}")
+                            type_color = Colors.GREEN if principal_type == "user" else Colors.GOLD
+                            type_str = logger.highlight(f"({principal_type})", type_color)
+                            high_value_str = ""
+                            if is_high_value:
+                                high_value_str = f" {logger.highlight('(high value)', Colors.BOLD + Colors.BRIGHT_YELLOW)}"
+                            control_str = ""
+                            if control_count > 0:
+                                control_str = f" {logger.highlight(f'(controls: {control_count})')}"
+                            logger.plain(f"  • {name_colored} {type_str}{high_value_str}{control_str}")
                     else:
                         pattern_colored = logger.highlight(args.search.upper())
                         owned_colored = logger.highlight("owned", Colors.BOLD + Colors.BRIGHT_YELLOW)
