@@ -127,6 +127,48 @@ def list_owned_users(tx: ManagedTransaction) -> list[str]:
     return [str(record["name"]).upper() for record in records]
 
 
+def search_owned_users(tx: ManagedTransaction, identifier: str) -> list[str]:
+    """
+    Search for owned users matching the identifier using the same logic as user resolution.
+    
+    Returns a list of matching owned users.
+    """
+    candidate = identifier.strip()
+    if not candidate:
+        return []
+    
+    q = candidate
+    params = {"q": q}
+    query = (
+        "MATCH (n:Base) "
+        "WHERE (toUpper(n.name) = toUpper($q) OR toUpper(n.azname) = toUpper($q)) "
+        "  AND n:User AND n.owned = true "
+        "RETURN n.name AS name LIMIT 10 "
+        "UNION "
+        "MATCH (n) "
+        "WHERE (toUpper(n.name) CONTAINS toUpper($q) "
+        "   OR toUpper(n.azname) CONTAINS toUpper($q) "
+        "   OR toUpper(n.objectid) CONTAINS toUpper($q)) "
+        "  AND n:User AND n.owned = true "
+        "RETURN n.name AS name LIMIT 10"
+    )
+    
+    result: Result = tx.run(query, **params)
+    records = list(result)
+    result.consume()
+    
+    names = [str(r["name"]).upper() for r in records]
+    # Deduplicate while preserving order
+    seen = set()
+    deduped = []
+    for n in names:
+        if n not in seen:
+            seen.add(n)
+            deduped.append(n)
+    
+    return deduped
+
+
 def resolve_user_principal_name(
     tx: ManagedTransaction, identifier: str
 ) -> str:
@@ -179,12 +221,13 @@ def resolve_user_principal_name(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Mark or unmark a user as owned in a BloodHound Neo4j database.")
-    parser.add_argument("user_principal_name", nargs="?", help="The user to mark/unmark as owned (e.g., 'user@domain.com' or 'USER'). Required unless using -l.")
+    parser.add_argument("user_principal_name", nargs="?", help="The user to mark/unmark/search as owned (e.g., 'user@domain.com' or 'USER'). Required unless using -l.")
     parser.add_argument("-t", "--target", default="bolt://localhost:7687", help="Neo4j URI (default: bolt://localhost:7687)")
     parser.add_argument("-u", "--user", default="neo4j", help="Neo4j username (default: neo4j)")
     parser.add_argument("-p", "--password", default="exegol4thewin", help="Neo4j password (default: exegol4thewin)")
     parser.add_argument("-d", "--delete", action="store_true", help="Unmark the user as owned (set owned to false)")
     parser.add_argument("-l", "--list", action="store_true", help="List all users marked as owned")
+    parser.add_argument("-s", "--search", action="store_true", help="Search for owned users matching the identifier")
     parser.add_argument("--no-color", action="store_true", help="Disable colored output")
 
     args = parser.parse_args()
@@ -197,8 +240,10 @@ def main() -> None:
     # Validate arguments
     if args.list and args.user_principal_name:
         parser.error("Cannot specify both -l/--list and a user name.")
-    if not args.list and not args.user_principal_name:
-        parser.error("Either specify a user name or use -l/--list to list owned users.")
+    if args.search and not args.user_principal_name:
+        parser.error("Search (-s/--search) requires a user name or pattern.")
+    if not args.list and not args.search and not args.user_principal_name:
+        parser.error("Either specify a user name or use -l/--list to list owned users or -s/--search to search.")
 
     uri = args.target
     user = args.user
@@ -226,6 +271,27 @@ def main() -> None:
                     else:
                         owned_colored = colorize("owned", Colors.BOLD + Colors.BRIGHT_YELLOW, use_color)
                         print(f"{colorize('[-]', Colors.RED, use_color)} No users marked as {owned_colored}.")
+                return
+
+            if args.search:
+                matching_users = session.execute_read(search_owned_users, args.user_principal_name)
+                if not should_colorize():
+                    # Non-TTY output: just raw data, one per line
+                    for upn in matching_users:
+                        print(upn)
+                else:
+                    # TTY output: formatted with colors
+                    if matching_users:
+                        pattern_colored = colorize(args.user_principal_name.upper(), Colors.CYAN, use_color)
+                        owned_colored = colorize("owned", Colors.BOLD + Colors.BRIGHT_YELLOW, use_color)
+                        print(f"{colorize('[+]', Colors.GREEN, use_color)} Found {len(matching_users)} {owned_colored} user(s) matching '{pattern_colored}':")
+                        for upn in matching_users:
+                            upn_colored = colorize(upn, Colors.CYAN, use_color)
+                            print(f"  • {upn_colored}")
+                    else:
+                        pattern_colored = colorize(args.user_principal_name.upper(), Colors.CYAN, use_color)
+                        owned_colored = colorize("owned", Colors.BOLD + Colors.BRIGHT_YELLOW, use_color)
+                        print(f"{colorize('[-]', Colors.RED, use_color)} No {owned_colored} users found matching '{pattern_colored}'.")
                 return
 
             # User operation (mark/unmark)
