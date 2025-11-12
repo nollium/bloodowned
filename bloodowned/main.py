@@ -91,6 +91,26 @@ def mark_user_as_owned(tx: ManagedTransaction, user_principal_name: str) -> bool
     return bool(updated or summary.counters.contains_updates)
 
 
+def unmark_user_as_owned(tx: ManagedTransaction, user_principal_name: str) -> bool:
+    """
+    Runs the Cypher query to unmark a user as owned.
+    """
+    query = (
+        "MATCH (u:User) "
+        "WHERE toUpper(u.name) = $upn "
+        "WITH u "
+        "SET u.owned = false "
+        "RETURN count(u) AS updated"
+    )
+    result: Result = tx.run(query, upn=user_principal_name.upper())
+    record = result.single()
+    summary = result.consume()
+    updated = 0
+    if record and "updated" in record:
+        updated = int(record["updated"])
+    return bool(updated or summary.counters.contains_updates)
+
+
 def resolve_user_principal_name(
     tx: ManagedTransaction, identifier: str
 ) -> str:
@@ -142,11 +162,12 @@ def resolve_user_principal_name(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Mark a user as owned in a BloodHound Neo4j database.")
-    parser.add_argument("user_principal_name", help="The user to mark as owned (e.g., 'user@domain.com' or 'USER').")
+    parser = argparse.ArgumentParser(description="Mark or unmark a user as owned in a BloodHound Neo4j database.")
+    parser.add_argument("user_principal_name", help="The user to mark/unmark as owned (e.g., 'user@domain.com' or 'USER').")
     parser.add_argument("-t", "--target", default="bolt://localhost:7687", help="Neo4j URI (default: bolt://localhost:7687)")
     parser.add_argument("-u", "--user", default="neo4j", help="Neo4j username (default: neo4j)")
     parser.add_argument("-p", "--password", default="exegol4thewin", help="Neo4j password (default: exegol4thewin)")
+    parser.add_argument("-d", "--delete", action="store_true", help="Unmark the user as owned (set owned to false)")
     parser.add_argument("--no-color", action="store_true", help="Disable colored output")
 
     args = parser.parse_args()
@@ -183,14 +204,23 @@ def main() -> None:
                 print(f"{colorize('[-]', Colors.RED, use_color)} User '{upn_colored}' not found.")
                 return
 
-            was_marked = session.execute_write(mark_user_as_owned, resolved_upn)
-            if was_marked:
-                upn_colored = colorize(resolved_upn, Colors.CYAN, use_color)
-                owned_colored = colorize("owned", Colors.BOLD + Colors.BRIGHT_YELLOW, use_color)
-                print(f"{colorize('[+]', Colors.GREEN, use_color)} Successfully marked user '{upn_colored}' as {owned_colored}.")
+            if args.delete:
+                was_updated = session.execute_write(unmark_user_as_owned, resolved_upn)
+                if was_updated:
+                    upn_colored = colorize(resolved_upn, Colors.CYAN, use_color)
+                    print(f"{colorize('[+]', Colors.GREEN, use_color)} Successfully unmarked user '{upn_colored}' as owned.")
+                else:
+                    upn_colored = colorize(resolved_upn, Colors.CYAN, use_color)
+                    print(f"{colorize('[-]', Colors.RED, use_color)} User '{upn_colored}' could not be updated.")
             else:
-                upn_colored = colorize(resolved_upn, Colors.CYAN, use_color)
-                print(f"{colorize('[-]', Colors.RED, use_color)} User '{upn_colored}' could not be updated.")
+                was_marked = session.execute_write(mark_user_as_owned, resolved_upn)
+                if was_marked:
+                    upn_colored = colorize(resolved_upn, Colors.CYAN, use_color)
+                    owned_colored = colorize("owned", Colors.BOLD + Colors.BRIGHT_YELLOW, use_color)
+                    print(f"{colorize('[+]', Colors.GREEN, use_color)} Successfully marked user '{upn_colored}' as {owned_colored}.")
+                else:
+                    upn_colored = colorize(resolved_upn, Colors.CYAN, use_color)
+                    print(f"{colorize('[-]', Colors.RED, use_color)} User '{upn_colored}' could not be updated.")
     except AuthError:
         user_colored = colorize(user, Colors.CYAN, use_color)
         print(f"{colorize('[-]', Colors.RED, use_color)} Authentication failed for user '{user_colored}'. Please check the credentials.")
