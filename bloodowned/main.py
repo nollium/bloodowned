@@ -111,6 +111,22 @@ def unmark_user_as_owned(tx: ManagedTransaction, user_principal_name: str) -> bo
     return bool(updated or summary.counters.contains_updates)
 
 
+def list_owned_users(tx: ManagedTransaction) -> list[str]:
+    """
+    Returns a list of all users marked as owned.
+    """
+    query = (
+        "MATCH (u:User) "
+        "WHERE u.owned = true "
+        "RETURN u.name AS name "
+        "ORDER BY u.name"
+    )
+    result: Result = tx.run(query)
+    records = list(result)
+    result.consume()
+    return [str(record["name"]).upper() for record in records]
+
+
 def resolve_user_principal_name(
     tx: ManagedTransaction, identifier: str
 ) -> str:
@@ -163,11 +179,12 @@ def resolve_user_principal_name(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Mark or unmark a user as owned in a BloodHound Neo4j database.")
-    parser.add_argument("user_principal_name", help="The user to mark/unmark as owned (e.g., 'user@domain.com' or 'USER').")
+    parser.add_argument("user_principal_name", nargs="?", help="The user to mark/unmark as owned (e.g., 'user@domain.com' or 'USER'). Required unless using -l.")
     parser.add_argument("-t", "--target", default="bolt://localhost:7687", help="Neo4j URI (default: bolt://localhost:7687)")
     parser.add_argument("-u", "--user", default="neo4j", help="Neo4j username (default: neo4j)")
     parser.add_argument("-p", "--password", default="exegol4thewin", help="Neo4j password (default: exegol4thewin)")
     parser.add_argument("-d", "--delete", action="store_true", help="Unmark the user as owned (set owned to false)")
+    parser.add_argument("-l", "--list", action="store_true", help="List all users marked as owned")
     parser.add_argument("--no-color", action="store_true", help="Disable colored output")
 
     args = parser.parse_args()
@@ -176,6 +193,12 @@ def main() -> None:
     use_color = should_colorize() and not args.no_color
     if not use_color:
         Colors.disable()
+
+    # Validate arguments
+    if args.list and args.user_principal_name:
+        parser.error("Cannot specify both -l/--list and a user name.")
+    if not args.list and not args.user_principal_name:
+        parser.error("Either specify a user name or use -l/--list to list owned users.")
 
     uri = args.target
     user = args.user
@@ -186,6 +209,26 @@ def main() -> None:
         driver = GraphDatabase.driver(uri, auth=(user, password))
         driver.verify_connectivity()
         with driver.session() as session:
+            if args.list:
+                owned_users = session.execute_read(list_owned_users)
+                if not should_colorize():
+                    # Non-TTY output: just raw data, one per line
+                    for upn in owned_users:
+                        print(upn)
+                else:
+                    # TTY output: formatted with colors
+                    if owned_users:
+                        owned_colored = colorize("owned", Colors.BOLD + Colors.BRIGHT_YELLOW, use_color)
+                        print(f"{colorize('[+]', Colors.GREEN, use_color)} Found {len(owned_users)} user(s) marked as {owned_colored}:")
+                        for upn in owned_users:
+                            upn_colored = colorize(upn, Colors.CYAN, use_color)
+                            print(f"  • {upn_colored}")
+                    else:
+                        owned_colored = colorize("owned", Colors.BOLD + Colors.BRIGHT_YELLOW, use_color)
+                        print(f"{colorize('[-]', Colors.RED, use_color)} No users marked as {owned_colored}.")
+                return
+
+            # User operation (mark/unmark)
             try:
                 resolved_upn = session.execute_read(
                     resolve_user_principal_name,
