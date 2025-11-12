@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bloodowned"
-version = "0.1.0"
+version = "0.1.1"
 description = "A tool to mark a user as owned in a BloodHound Neo4j database."
 requires-python = ">=3.7"
 classifiers = [

@@ -70,18 +70,19 @@ class MultipleUsersFoundError(UserLookupError):
         self.matches = matches_list
 
 
-def mark_user_as_owned(tx: ManagedTransaction, user_principal_name: str) -> bool:
+def mark_as_owned(tx: ManagedTransaction, principal_name: str, is_computer: bool) -> bool:
     """
-    Runs the Cypher query to mark a user as owned.
+    Runs the Cypher query to mark a user or computer as owned.
     """
+    node_type = "Computer" if is_computer else "User"
     query = (
-        "MATCH (u:User) "
-        "WHERE toUpper(u.name) = $upn "
-        "WITH u "
-        "SET u.owned = true "
-        "RETURN count(u) AS updated"
+        f"MATCH (n:{node_type}) "
+        "WHERE toUpper(n.name) = $principal_name "
+        "WITH n "
+        "SET n.owned = true "
+        "RETURN count(n) AS updated"
     )
-    result: Result = tx.run(query, upn=user_principal_name.upper())
+    result: Result = tx.run(query, principal_name=principal_name.upper())
     record = result.single()
     summary = result.consume()
     updated = 0
@@ -90,18 +91,19 @@ def mark_user_as_owned(tx: ManagedTransaction, user_principal_name: str) -> bool
     return bool(updated or summary.counters.contains_updates)
 
 
-def unmark_user_as_owned(tx: ManagedTransaction, user_principal_name: str) -> bool:
+def unmark_as_owned(tx: ManagedTransaction, principal_name: str, is_computer: bool) -> bool:
     """
-    Runs the Cypher query to unmark a user as owned.
+    Runs the Cypher query to unmark a user or computer as owned.
     """
+    node_type = "Computer" if is_computer else "User"
     query = (
-        "MATCH (u:User) "
-        "WHERE toUpper(u.name) = $upn "
-        "WITH u "
-        "SET u.owned = false "
-        "RETURN count(u) AS updated"
+        f"MATCH (n:{node_type}) "
+        "WHERE toUpper(n.name) = $principal_name "
+        "WITH n "
+        "SET n.owned = false "
+        "RETURN count(n) AS updated"
     )
-    result: Result = tx.run(query, upn=user_principal_name.upper())
+    result: Result = tx.run(query, principal_name=principal_name.upper())
     record = result.single()
     summary = result.consume()
     updated = 0
@@ -110,15 +112,15 @@ def unmark_user_as_owned(tx: ManagedTransaction, user_principal_name: str) -> bo
     return bool(updated or summary.counters.contains_updates)
 
 
-def list_owned_users(tx: ManagedTransaction) -> list[str]:
+def list_owned_principals(tx: ManagedTransaction) -> list[str]:
     """
-    Returns a list of all users marked as owned.
+    Returns a list of all users and computers marked as owned.
     """
     query = (
-        "MATCH (u:User) "
-        "WHERE u.owned = true "
-        "RETURN u.name AS name "
-        "ORDER BY u.name"
+        "MATCH (n) "
+        "WHERE (n:User OR n:Computer) AND n.owned = true "
+        "RETURN n.name AS name "
+        "ORDER BY n.name"
     )
     result: Result = tx.run(query)
     records = list(result)
@@ -126,11 +128,31 @@ def list_owned_users(tx: ManagedTransaction) -> list[str]:
     return [str(record["name"]).upper() for record in records]
 
 
-def search_owned_users(tx: ManagedTransaction, identifier: str) -> list[str]:
+def get_users(users_list: list[str], file_path: Optional[str]) -> list[str]:
     """
-    Search for owned users matching the identifier using the same logic as user resolution.
+    Collects a list of users from command-line arguments and/or a file.
+    """
+    all_users = set(users_list)
+    if file_path:
+        if file_path == "-":
+            for line in sys.stdin:
+                user = line.strip()
+                if user:
+                    all_users.add(user)
+        else:
+            with open(file_path, "r") as f:
+                for line in f:
+                    user = line.strip()
+                    if user:
+                        all_users.add(user)
+    return sorted(list(all_users))
+
+
+def search_owned_principals(tx: ManagedTransaction, identifier: str) -> list[str]:
+    """
+    Search for owned users or computers matching the identifier.
     
-    Returns a list of matching owned users.
+    Returns a list of matching owned principals.
     """
     candidate = identifier.strip()
     if not candidate:
@@ -141,14 +163,14 @@ def search_owned_users(tx: ManagedTransaction, identifier: str) -> list[str]:
     query = (
         "MATCH (n:Base) "
         "WHERE (toUpper(n.name) = toUpper($q) OR toUpper(n.azname) = toUpper($q)) "
-        "  AND n:User AND n.owned = true "
+        "  AND (n:User OR n:Computer) AND n.owned = true "
         "RETURN n.name AS name LIMIT 10 "
         "UNION "
         "MATCH (n) "
         "WHERE (toUpper(n.name) CONTAINS toUpper($q) "
         "   OR toUpper(n.azname) CONTAINS toUpper($q) "
         "   OR toUpper(n.objectid) CONTAINS toUpper($q)) "
-        "  AND n:User AND n.owned = true "
+        "  AND (n:User OR n:Computer) AND n.owned = true "
         "RETURN n.name AS name LIMIT 10"
     )
     
@@ -167,39 +189,42 @@ def search_owned_users(tx: ManagedTransaction, identifier: str) -> list[str]:
     return deduped
 
 
-def resolve_user_principal_name(
+def resolve_principal_name(
     tx: ManagedTransaction, identifier: str
 ) -> str:
     """
-    Resolve a user identifier to a unique UPN.
-
-    If the identifier already contains a domain, match it directly. Otherwise,
-    attempt to find a single user whose UPN's local part matches the provided
-    identifier. If multiple matches are found, raise an error.
+    Resolve a user or computer identifier to a unique principal name.
     """
-
     candidate = identifier.strip()
+    is_machine_account = False
+    if candidate.endswith("$"):
+        is_machine_account = True
+        candidate = candidate[:-1]
+
     if not candidate:
         raise UserNotFoundError(identifier)
 
     q = candidate
     params = {"q": q}
+    
+    node_type = "Computer" if is_machine_account else "User"
+
     query = (
-        "MATCH (n:Base) "
+        f"MATCH (n:{node_type}) "
         "WHERE toUpper(n.name) = toUpper($q) OR toUpper(n.azname) = toUpper($q) "
-        "RETURN n.name AS name, n:User AS isUser LIMIT 10 "
+        "RETURN n.name AS name LIMIT 10 "
         "UNION "
-        "MATCH (n) "
-        "WHERE toUpper(n.name) CONTAINS toUpper($q) "
+        f"MATCH (n:{node_type}) "
+        "WHERE (toUpper(n.name) CONTAINS toUpper($q) "
         "   OR toUpper(n.azname) CONTAINS toUpper($q) "
-        "   OR toUpper(n.objectid) CONTAINS toUpper($q) "
-        "RETURN n.name AS name, n:User AS isUser LIMIT 10"
+        "   OR toUpper(n.objectid) CONTAINS toUpper($q)) "
+        "RETURN n.name AS name LIMIT 10"
     )
 
     result: Result = tx.run(query, **params)
     records = list(result)
     result.consume()
-    names = [str(r["name"]).upper() for r in records if r.get("isUser")]
+    names = [str(r["name"]).upper() for r in records]
     seen = set()
     deduped = []
     for n in names:
@@ -208,22 +233,26 @@ def resolve_user_principal_name(
             deduped.append(n)
 
     if not deduped:
-        raise UserNotFoundError(candidate)
+        raise UserNotFoundError(identifier)
     if len(deduped) > 1:
-        raise MultipleUsersFoundError(candidate, deduped)
+        raise MultipleUsersFoundError(identifier, deduped)
 
     return deduped[0]
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Mark or unmark a user as owned in a BloodHound Neo4j database.")
-    parser.add_argument("user_principal_name", nargs="?", help="The user to mark/unmark/search as owned (e.g., 'user@domain.com' or 'USER'). Required unless using -l.")
+    parser = argparse.ArgumentParser(description="Mark, unmark, search, and list owned users in a BloodHound Neo4j database.")
+    parser.add_argument("users", nargs="*", help="One or more users to mark/unmark as owned.")
+    parser.add_argument("-f", "--file", help="File with users to mark/unmark (one per line, '-' for stdin).")
     parser.add_argument("-t", "--target", default="bolt://localhost:7687", help="Neo4j URI (default: bolt://localhost:7687)")
     parser.add_argument("-u", "--user", default="neo4j", help="Neo4j username (default: neo4j)")
     parser.add_argument("-p", "--password", default="exegol4thewin", help="Neo4j password (default: exegol4thewin)")
-    parser.add_argument("-d", "--delete", action="store_true", help="Unmark the user as owned (set owned to false)")
-    parser.add_argument("-l", "--list", action="store_true", help="List all users marked as owned")
-    parser.add_argument("-s", "--search", action="store_true", help="Search for owned users matching the identifier")
+    parser.add_argument("-d", "--delete", action="store_true", help="Unmark user(s) as owned.")
+
+    mode_group = parser.add_mutually_exclusive_group()
+    mode_group.add_argument("-l", "--list", action="store_true", help="List all users marked as owned.")
+    mode_group.add_argument("-s", "--search", help="Search for owned users matching a pattern.")
+    
     parser.add_argument("--no-color", action="store_true", help="Disable colored output")
 
     args = parser.parse_args()
@@ -232,12 +261,21 @@ def main() -> None:
     if not use_color:
         Colors.disable()
 
-    if args.list and args.user_principal_name:
-        parser.error("Cannot specify both -l/--list and a user name.")
-    if args.search and not args.user_principal_name:
-        parser.error("Search (-s/--search) requires a user name or pattern.")
-    if not args.list and not args.search and not args.user_principal_name:
-        parser.error("Either specify a user name or use -l/--list to list owned users or -s/--search to search.")
+    if args.list and (args.users or args.file):
+        parser.error("-l/--list cannot be used with user arguments or -f/--file.")
+    if args.search and (args.users or args.file):
+        parser.error("-s/--search cannot be used with user arguments or -f/--file.")
+    
+    users_to_process = []
+    if not args.list and not args.search:
+        try:
+            users_to_process = get_users(args.users, args.file)
+        except FileNotFoundError:
+            print(f"{colorize('[-]', Colors.RED, True)} File not found: {colorize(args.file, Colors.CYAN, True)}")
+            return
+        
+        if not users_to_process:
+            parser.error("You must specify at least one user to mark/unmark, or use -l or -s.")
 
     uri = args.target
     user = args.user
@@ -249,76 +287,77 @@ def main() -> None:
         driver.verify_connectivity()
         with driver.session() as session:
             if args.list:
-                owned_users = session.execute_read(list_owned_users)
+                owned_principals = session.execute_read(list_owned_principals)
                 if not should_colorize():
-                    for upn in owned_users:
-                        print(upn)
+                    for name in owned_principals:
+                        print(name)
                 else:
-                    if owned_users:
+                    if owned_principals:
                         owned_colored = colorize("owned", Colors.BOLD + Colors.BRIGHT_YELLOW, use_color)
-                        print(f"{colorize('[+]', Colors.GREEN, use_color)} Found {len(owned_users)} user(s) marked as {owned_colored}:")
-                        for upn in owned_users:
-                            upn_colored = colorize(upn, Colors.CYAN, use_color)
-                            print(f"  • {upn_colored}")
+                        print(f"{colorize('[+]', Colors.GREEN, use_color)} Found {len(owned_principals)} principal(s) marked as {owned_colored}:")
+                        for name in owned_principals:
+                            name_colored = colorize(name, Colors.CYAN, use_color)
+                            print(f"  • {name_colored}")
                     else:
                         owned_colored = colorize("owned", Colors.BOLD + Colors.BRIGHT_YELLOW, use_color)
-                        print(f"{colorize('[-]', Colors.RED, use_color)} No users marked as {owned_colored}.")
+                        print(f"{colorize('[-]', Colors.RED, use_color)} No principals marked as {owned_colored}.")
                 return
 
             if args.search:
-                matching_users = session.execute_read(search_owned_users, args.user_principal_name)
+                matching_principals = session.execute_read(search_owned_principals, args.search)
                 if not should_colorize():
-                    for upn in matching_users:
-                        print(upn)
+                    for name in matching_principals:
+                        print(name)
                 else:
-                    if matching_users:
-                        pattern_colored = colorize(args.user_principal_name.upper(), Colors.CYAN, use_color)
+                    if matching_principals:
+                        pattern_colored = colorize(args.search.upper(), Colors.CYAN, use_color)
                         owned_colored = colorize("owned", Colors.BOLD + Colors.BRIGHT_YELLOW, use_color)
-                        print(f"{colorize('[+]', Colors.GREEN, use_color)} Found {len(matching_users)} {owned_colored} user(s) matching '{pattern_colored}':")
-                        for upn in matching_users:
-                            upn_colored = colorize(upn, Colors.CYAN, use_color)
-                            print(f"  • {upn_colored}")
+                        print(f"{colorize('[+]', Colors.GREEN, use_color)} Found {len(matching_principals)} {owned_colored} principal(s) matching '{pattern_colored}':")
+                        for name in matching_principals:
+                            name_colored = colorize(name, Colors.CYAN, use_color)
+                            print(f"  • {name_colored}")
                     else:
-                        pattern_colored = colorize(args.user_principal_name.upper(), Colors.CYAN, use_color)
+                        pattern_colored = colorize(args.search.upper(), Colors.CYAN, use_color)
                         owned_colored = colorize("owned", Colors.BOLD + Colors.BRIGHT_YELLOW, use_color)
-                        print(f"{colorize('[-]', Colors.RED, use_color)} No {owned_colored} users found matching '{pattern_colored}'.")
+                        print(f"{colorize('[-]', Colors.RED, use_color)} No {owned_colored} principals found matching '{pattern_colored}'.")
                 return
 
-            try:
-                resolved_upn = session.execute_read(
-                    resolve_user_principal_name,
-                    args.user_principal_name,
-                )
-            except MultipleUsersFoundError as multi_error:
-                matches = ", ".join(sorted(name.upper() for name in multi_error.matches))
-                upn_colored = colorize(multi_error.identifier.upper(), Colors.CYAN, use_color)
-                matches_colored = colorize(matches, Colors.CYAN, use_color)
-                print(
-                    f"{colorize('[-]', Colors.RED, use_color)} Multiple users matched '{upn_colored}': {matches_colored}"
-                )
-                return
-            except UserNotFoundError as not_found_error:
-                upn_colored = colorize(not_found_error.identifier.upper(), Colors.CYAN, use_color)
-                print(f"{colorize('[-]', Colors.RED, use_color)} User '{upn_colored}' not found.")
-                return
+            for user_identifier in users_to_process:
+                try:
+                    resolved_principal = session.execute_read(
+                        resolve_principal_name,
+                        user_identifier,
+                    )
 
-            if args.delete:
-                was_updated = session.execute_write(unmark_user_as_owned, resolved_upn)
-                if was_updated:
-                    upn_colored = colorize(resolved_upn, Colors.CYAN, use_color)
-                    print(f"{colorize('[+]', Colors.GREEN, use_color)} Successfully unmarked user '{upn_colored}' as owned.")
-                else:
-                    upn_colored = colorize(resolved_upn, Colors.CYAN, use_color)
-                    print(f"{colorize('[-]', Colors.RED, use_color)} User '{upn_colored}' could not be updated.")
-            else:
-                was_marked = session.execute_write(mark_user_as_owned, resolved_upn)
-                if was_marked:
-                    upn_colored = colorize(resolved_upn, Colors.CYAN, use_color)
-                    owned_colored = colorize("owned", Colors.BOLD + Colors.BRIGHT_YELLOW, use_color)
-                    print(f"{colorize('[+]', Colors.GREEN, use_color)} Successfully marked user '{upn_colored}' as {owned_colored}.")
-                else:
-                    upn_colored = colorize(resolved_upn, Colors.CYAN, use_color)
-                    print(f"{colorize('[-]', Colors.RED, use_color)} User '{upn_colored}' could not be updated.")
+                    is_computer = user_identifier.strip().endswith("$")
+                    if args.delete:
+                        was_updated = session.execute_write(unmark_as_owned, resolved_principal, is_computer)
+                        if was_updated:
+                            principal_colored = colorize(resolved_principal, Colors.CYAN, use_color)
+                            print(f"{colorize('[+]', Colors.GREEN, use_color)} Successfully unmarked '{principal_colored}'.")
+                        else:
+                            principal_colored = colorize(resolved_principal, Colors.CYAN, use_color)
+                            print(f"{colorize('[-]', Colors.RED, use_color)} Principal '{principal_colored}' could not be updated.")
+                    else:
+                        was_marked = session.execute_write(mark_as_owned, resolved_principal, is_computer)
+                        if was_marked:
+                            principal_colored = colorize(resolved_principal, Colors.CYAN, use_color)
+                            owned_colored = colorize("owned", Colors.BOLD + Colors.BRIGHT_YELLOW, use_color)
+                            print(f"{colorize('[+]', Colors.GREEN, use_color)} Successfully marked '{principal_colored}' as {owned_colored}.")
+                        else:
+                            principal_colored = colorize(resolved_principal, Colors.CYAN, use_color)
+                            print(f"{colorize('[-]', Colors.RED, use_color)} Principal '{principal_colored}' could not be updated.")
+
+                except MultipleUsersFoundError as multi_error:
+                    matches = ", ".join(sorted(name.upper() for name in multi_error.matches))
+                    identifier_colored = colorize(multi_error.identifier.upper(), Colors.CYAN, use_color)
+                    matches_colored = colorize(matches, Colors.CYAN, use_color)
+                    print(
+                        f"{colorize('[-]', Colors.RED, use_color)} Multiple principals matched '{identifier_colored}': {matches_colored}"
+                    )
+                except UserNotFoundError as not_found_error:
+                    identifier_colored = colorize(not_found_error.identifier.upper(), Colors.CYAN, use_color)
+                    print(f"{colorize('[-]', Colors.RED, use_color)} Principal '{identifier_colored}' not found.")
     except AuthError:
         user_colored = colorize(user, Colors.CYAN, use_color)
         print(f"{colorize('[-]', Colors.RED, use_color)} Authentication failed for user '{user_colored}'. Please check the credentials.")
