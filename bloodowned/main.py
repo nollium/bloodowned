@@ -133,15 +133,16 @@ def unmark_as_owned(tx: ManagedTransaction, principal_name: str, is_computer: bo
     return bool(updated or summary.counters.contains_updates)
 
 
-def list_owned_principals(tx: ManagedTransaction) -> list[tuple[str, bool, str]]:
+def list_owned_principals(tx: ManagedTransaction) -> list[tuple[str, bool, str, int]]:
     """
     Returns a list of all users and computers marked as owned,
-    including their high value status and principal type.
+    including their high value status, principal type, and control count.
     """
     query = (
         "MATCH (n) "
         "WHERE (n:User OR n:Computer) AND n.owned = true "
-        "RETURN n.name AS name, n.highvalue AS is_high_value, labels(n) as labels "
+        "OPTIONAL MATCH (n)-[r]->(m) WHERE r.isacl = true "
+        "RETURN n.name AS name, n.highvalue AS is_high_value, labels(n) as labels, count(m) as control_count "
         "ORDER BY n.name"
     )
     result: Result = tx.run(query)
@@ -154,7 +155,8 @@ def list_owned_principals(tx: ManagedTransaction) -> list[tuple[str, bool, str]]
         is_high_value = record["is_high_value"] is True
         labels = record["labels"]
         principal_type = "computer" if "Computer" in labels else "user"
-        principals.append((name, is_high_value, principal_type))
+        control_count = record["control_count"]
+        principals.append((name, is_high_value, principal_type, control_count))
     return principals
 
 
@@ -321,23 +323,28 @@ def main() -> None:
             if args.list:
                 owned_principals = session.execute_read(list_owned_principals)
                 if not use_color:
-                    for name, is_high_value, principal_type in owned_principals:
+                    for name, is_high_value, principal_type, control_count in owned_principals:
                         line = f"{name} ({principal_type})"
                         if is_high_value:
                             line += " (high value)"
+                        if control_count > 0:
+                            line += f" (controls: {control_count})"
                         logger.plain(line)
                 else:
                     if owned_principals:
                         owned_colored = logger.highlight("owned", Colors.BOLD + Colors.BRIGHT_YELLOW)
                         logger.success(f"Found {len(owned_principals)} principal(s) marked as {owned_colored}:")
-                        for name, is_high_value, principal_type in owned_principals:
+                        for name, is_high_value, principal_type, control_count in owned_principals:
                             name_colored = logger.highlight(name)
                             type_color = Colors.GREEN if principal_type == "user" else Colors.GOLD
                             type_str = logger.highlight(f"({principal_type})", type_color)
                             high_value_str = ""
                             if is_high_value:
                                 high_value_str = f" {logger.highlight('(high value)', Colors.BOLD + Colors.BRIGHT_YELLOW)}"
-                            logger.plain(f"  • {name_colored} {type_str}{high_value_str}")
+                            control_str = ""
+                            if control_count > 0:
+                                control_str = f" {logger.highlight(f'(controls: {control_count})')}"
+                            logger.plain(f"  • {name_colored} {type_str}{high_value_str}{control_str}")
                     else:
                         owned_colored = logger.highlight("owned", Colors.BOLD + Colors.BRIGHT_YELLOW)
                         logger.error(f"No principals marked as {owned_colored}.")
